@@ -21,7 +21,7 @@ Team Name: 届不到の自旋玻璃
 
 #### refenrence
 
-- ???
+- 什么是QAM: [https://info.support.huawei.com/info-finder/encyclopedia/zh/QAM.html](https://info.support.huawei.com/info-finder/encyclopedia/zh/QAM.html)
 
 
 ----

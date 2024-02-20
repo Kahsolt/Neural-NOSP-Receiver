@@ -1,0 +1,4 @@
+torchmetrics
+lightning
+numpy
+h5py

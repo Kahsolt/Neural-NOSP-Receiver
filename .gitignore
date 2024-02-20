@@ -8,5 +8,8 @@ data/
 # ref
 ref/
 
+# log
+lightning_logs/
+
 # submit
 modelSubmit/

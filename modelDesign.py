@@ -1,77 +1,104 @@
-# =======================================================================================================================
-# =======================================================================================================================
+#!/usr/bin/env python3
+# Author: Armit
+# Create Time: 2024/02/20
+
 import torch
 import torch.nn as nn
+from torch import Tensor
 
 
 class ResBlock(nn.Module):
-    def __init__(self, channel_list, H, W, **kwargs):
-        super(ResBlock, self).__init__(**kwargs)
-        self.channel_list = channel_list
-        self._conv_1 = nn.Conv2d(self.channel_list[2], self.channel_list[0], kernel_size=3, padding='same')
-        self._layer_norm_1 = nn.LayerNorm([self.channel_list[0], H, W])
-        self._conv_2 = nn.Conv2d(self.channel_list[0], self.channel_list[1], kernel_size=3, padding='same')
-        self._layer_norm_2 = nn.LayerNorm([self.channel_list[1], H, W])
-        self._relu = nn.ReLU()
 
-    def forward(self, inputs):
-        x_ini = inputs
-        x = self._layer_norm_1(x_ini)
-        x = self._relu(x)
-        x = self._conv_1(x)
-        x = self._layer_norm_2(x)
-        x = self._relu(x)
-        x = self._conv_2(x)
-        x_ini = x_ini + x
-        return x_ini
+  def __init__(self, channel_list, H, W):
+    super().__init__()
+
+    self.channel_list = channel_list
+    self.conv1 = nn.Conv2d(self.channel_list[2], self.channel_list[0], kernel_size=3, padding='same')
+    self.ln1 = nn.LayerNorm([self.channel_list[0], H, W])
+    self.conv2 = nn.Conv2d(self.channel_list[0], self.channel_list[1], kernel_size=3, padding='same')
+    self.ln2 = nn.LayerNorm([self.channel_list[1], H, W])
+    self.act = nn.ReLU()
+
+  def forward(self, x:Tensor) -> Tensor:
+    r = x
+    x = self.ln1(x)
+    x = self.act(x)
+    x = self.conv1(x)
+    x = self.ln2(x)
+    x = self.act(x)
+    x = self.conv2(x)
+    o = r + x
+    return o
 
 
 class Neural_receiver(nn.Module):
-    def __init__(self, subcarriers, timesymbols, streams, num_bits_per_symbol, num_blocks=6, channel_list=[24, 24, 24],
-                 **kwargs):
-        super(Neural_receiver, self).__init__(**kwargs)
-        self.subcarriers = subcarriers
-        self.timesymbols = timesymbols
-        self.streams = streams
-        self.num_blocks = num_blocks
-        self.channel_list = channel_list
-        self.num_bits_per_symbol = num_bits_per_symbol
 
-        self.blocks = nn.Sequential()
-        for block_id in range(self.num_blocks):
-            block = ResBlock(channel_list=self.channel_list, H=self.timesymbols, W=self.subcarriers)
-            self.blocks.add_module(name='block_{}'.format(block_id), module=block)
-        self._conv_1 = nn.Conv2d(4 * self.streams, self.channel_list[2], kernel_size=3, padding='same')
-        self._conv_2 = nn.Conv2d(self.channel_list[1], self.streams * self.num_bits_per_symbol, kernel_size=3,
-                                 padding='same')
+  def __init__(self, subcarriers:int, timesymbols:int, streams:int, num_bits_per_symbol:int, **kwargs):
+    super().__init__()
 
-    def forward(self, y, template_pilot):
-        # y : [batch size,NUM_LAYERS,NUM_OFDM_SYMBOLS, NUM_SUBCARRIERS,2]
-        # template_pilot : [batch size,NUM_LAYERS,NUM_OFDM_SYMBOLS, NUM_SUBCARRIERS,2]
-        batch_size = y.shape[0]
-        y = y.permute(0, 2, 3, 1, 4)  # y :  [batch size,NUM_OFDM_SYMBOLS, NUM_SUBCARRIERS,NUM_LAYERS,2]
-        y = torch.reshape(y, (batch_size, self.timesymbols, self.subcarriers, self.streams * 2))
-        # y :  [batch size,NUM_OFDM_SYMBOLS, NUM_SUBCARRIERS,NUM_LAYERS*2]
-        template_pilot = template_pilot.permute(0, 2, 3, 1, 4)
-        # p :  [batch size,NUM_OFDM_SYMBOLS, NUM_SUBCARRIERS,NUM_LAYERS,2]
-        template_pilot = torch.reshape(template_pilot,
-                                       (batch_size, self.timesymbols, self.subcarriers, self.streams * 2))
+    self.subcarriers = subcarriers                  # S=624/96
+    self.timesymbols = timesymbols                  # T=12
+    self.streams = streams                          # L=Nr, 2/4
+    self.num_bits_per_symbol = num_bits_per_symbol  # M=4/6
 
-        z = torch.cat([y, template_pilot], dim=-1)
-        # Channel first
-        z = z.permute(0, 3, 1, 2)
-        # Input conv
-        z = self._conv_1(z)
-        # Residual blocks
-        z = self.blocks(z)
-        # Output conv
-        z = self._conv_2(z)
-        # z :  [batch size, NUM_LAYERS*NUM_SUBCARRIERS, NUM_BITS_PER_SYMBOL, NUM_OFDM_SYMBOLS]
-        # Channel last
-        z = z.permute(0, 2, 3, 1)
-        # z :  [batch size,NUM_OFDM_SYMBOLS, NUM_SUBCARRIERS, NUM_LAYERS*NUM_BITS_PER_SYMBOL]
-        z = torch.reshape(z, (batch_size, self.timesymbols, self.subcarriers, self.streams, self.num_bits_per_symbol))
-        # z :  [batch size,NUM_OFDM_SYMBOLS, NUM_SUBCARRIERS, NUM_LAYERS, NUM_BITS_PER_SYMBOL]
-        z = z.permute(0, 3, 1, 2, 4)
-        # z : [batch size, NUM_LAYERS, NUM_OFDM_SYMBOLS, NUM_SUBCARRIERS,NUM_BITS_PER_SYMBOL)
-        return z
+    self.num_blocks = 6
+    self.channel_list = [24, 24, 24]
+
+    self.pre_conv = nn.Conv2d(4 * self.streams, self.channel_list[2], kernel_size=3, padding='same')
+    self.blocks = nn.ModuleList([
+      ResBlock(self.channel_list, H=self.timesymbols, W=self.subcarriers) for _ in range(self.num_blocks)
+    ])
+    self.post_conv = nn.Conv2d(self.channel_list[1], self.streams * self.num_bits_per_symbol, kernel_size=3, padding='same')
+
+  def forward(self, x:Tensor, t:Tensor) -> Tensor:
+    # [B=16, L=2, T=12, S=642, c=2]
+    # x: vrng ~ ±7.0
+    # t: vrng {-1, 1}
+
+    if not 'use jit model':
+      B, L, T, S, c = x.shape
+      M = self.num_bits_per_symbol
+      assert L == self.streams
+      assert T == self.timesymbols
+      assert S == self.subcarriers
+    else:
+      B = x.shape[0]
+      M = self.num_bits_per_symbol
+      L = self.streams
+      T = self.timesymbols
+      S = self.subcarriers
+      c = 2
+
+    # [B, L*c, T, S]
+    x = x.permute(0, 1, 4, 2, 3).reshape(B, L * c, T, S)
+    t = t.permute(0, 1, 4, 2, 3).reshape(B, L * c, T, S)
+    # [B, L*4, T, S]
+    z = torch.cat([x, t], dim=1)
+
+    # [B, C=L*4, T, S]; T for time-domain, S for freq-domain
+    z = self.pre_conv(z)      # [B, C=24, T=12, F=624/96]
+    for block in self.blocks:
+      z = block(z)            # [B, C=24, T, S]
+    z = self.post_conv(z)     # [B, C=L*M, T, S]
+
+    # [B, L, T, S, M]
+    z: Tensor
+    z = z.reshape(B, L, M, T, S).permute(0, 1, 3, 4, 2)
+
+    return z
+
+
+if __name__ == '__main__':
+  model = Neural_receiver(642, 12, 2, 4)
+  X = torch.rand([16, 2, 12, 642, 2])
+  T = (torch.rand([16, 2, 12, 642, 2]) > 0) * 2 - 1
+  logits = model(X, T)
+  print('X.shape:', X.shape)
+  print('logits.shape:', logits.shape)
+
+  model = Neural_receiver(96, 12, 4, 6)
+  X = torch.rand([16, 4, 12, 96, 2])
+  T = (torch.rand([16, 4, 12, 96, 2]) > 0) * 2 - 1
+  logits = model(X, T)
+  print('X.shape:', X.shape)
+  print('logits.shape:', logits.shape)
