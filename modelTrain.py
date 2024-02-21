@@ -26,19 +26,33 @@ torch.set_float32_matmul_precision('medium')
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
-DATASET_TO_MODEL_SCHEMA = {
-  'D1': {
+CASE_TO_CONFIG = {
+  '1a': {
+    'model': 'NeuralReceiver_1a',
     'subcarriers': 624,         # 子载波 S
     'timesymbols': 12,          # 符号 T
     'streams': 2,               # 接收天线/传输层 L
     'num_bits_per_symbol': 4,   # 比特 M
   },
-  'D2': {
+  '1b': {
+    'model': 'NeuralReceiver_1b',
+    'subcarriers': 624,
+    'timesymbols': 12,
+    'streams': 2,
+    'num_bits_per_symbol': 4,
+  },
+  '2': {
+    'model': 'NeuralReceiver_2',
     'subcarriers': 96,
     'timesymbols': 12,
     'streams': 4,
     'num_bits_per_symbol': 6,
   },
+}
+CASE_TO_DATASET = {
+  '1a': 'D1',
+  '1b': 'D1',
+  '2':  'D2',
 }
 
 
@@ -62,7 +76,7 @@ class SignalDataset(Dataset):
 
 class LitModel(LightningModule):
 
-  def __init__(self, model:Neural_receiver):
+  def __init__(self, model:NeuralReceiverBase):
     super().__init__()
 
     self.model = model
@@ -117,10 +131,11 @@ def train(args):
   print('>> args:', vars(args))
 
   ''' Data '''
-  with HDF5File(os.path.join('data', f'{args.dataset}.hdf5'), 'r') as fh:
-    pilot     = np.asarray(fh['pilot']).squeeze(axis=0)  # [L=2, T=12, S=624, c=2], vset {-1, 1}
-    rx_signal = np.asarray(fh['rx_signal'])     # [N=20000, L=2, T=12, S=624, c=2]; float16
-    tx_bits   = np.asarray(fh['tx_bits'])       # [N=20000, L=2, T=12, S=624, M=4]; vset {0, 1}, target label
+  dataset = CASE_TO_DATASET[args.case]
+  with HDF5File(os.path.join('data', f'{dataset}.hdf5'), 'r') as fh:
+    pilot     = np.asarray(fh['pilot']).squeeze(axis=0)  # [L=2/4, T=12, S=624/96, c=2], vset {-1, 0, +1}
+    rx_signal = np.asarray(fh['rx_signal'])     # [N=20000, L=2/4, T=12, S=624/96, c=2]; float16
+    tx_bits   = np.asarray(fh['tx_bits'])       # [N=20000, L=2/4, T=12, S=624/96, M=4/6]; vset {0, 1}, target label
   print('rx_signal:', rx_signal.shape, rx_signal.dtype)
   print('tx_bits:', tx_bits.shape, tx_bits.dtype)
   print('pilot:', pilot.shape, pilot.dtype)
@@ -143,11 +158,11 @@ def train(args):
   validloader = DataLoader(validset, args.batch_size, shuffle=False, drop_last=False, **dataloader_kwargs)
 
   ''' Model & Optim '''
-  schema = DATASET_TO_MODEL_SCHEMA[args.dataset]
-  model = Neural_receiver(**schema)
+  config = CASE_TO_CONFIG[args.case]
+  model_cls = globals()[config['model']]
+  model = model_cls(**config)
   print(model)
   lit = LitModel(model)
-  lit.setup_train_args(args)
   if args.load:
     lit = LitModel.load_from_checkpoint(args.load, model=model)
   lit.setup_train_args(args)
@@ -164,7 +179,7 @@ def train(args):
 
 if __name__ == '__main__':
   parser = ArgumentParser()
-  parser.add_argument('-D', '--dataset',    default='D1', choices=['D1', 'D2'])
+  parser.add_argument('-C', '--case',       default='2', choices=['1a', '1b', '2'])
   parser.add_argument('-B', '--batch_size', default=128,  type=int)
   parser.add_argument('-E', '--epochs',     default=30,   type=int)
   parser.add_argument('-lr', '--lr',        default=1e-3, type=eval)

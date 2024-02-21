@@ -31,15 +31,24 @@ class ResBlock(nn.Module):
     return o
 
 
-class Neural_receiver(nn.Module):
+class NeuralReceiverBase(nn.Module):
 
-  def __init__(self, subcarriers:int, timesymbols:int, streams:int, num_bits_per_symbol:int, **kwargs):
+  def __init__(self, subcarriers:int, timesymbols:int, streams:int, num_bits_per_symbol:int):
     super().__init__()
 
     self.subcarriers = subcarriers                  # S=624/96
     self.timesymbols = timesymbols                  # T=12
     self.streams = streams                          # L=Nr, 2/4
     self.num_bits_per_symbol = num_bits_per_symbol  # M=4/6
+
+  def forward(self, x:Tensor, t:Tensor) -> Tensor:
+    raise NotImplementedError
+
+
+class NeuralReceiver_1a(NeuralReceiverBase):
+  
+  def __init__(self, subcarriers:int, timesymbols:int, streams:int, num_bits_per_symbol:int, **kwargs):
+    super().__init__(subcarriers, timesymbols, streams, num_bits_per_symbol)
 
     self.num_blocks = 6
     self.channel_list = [24, 24, 24]
@@ -55,7 +64,7 @@ class Neural_receiver(nn.Module):
     # x: vrng ~ ±7.0
     # t: vrng {-1, 1}
 
-    if not 'use jit model':
+    if not 'dynamic':
       B, L, T, S, c = x.shape
       M = self.num_bits_per_symbol
       assert L == self.streams
@@ -88,17 +97,44 @@ class Neural_receiver(nn.Module):
     return z
 
 
-if __name__ == '__main__':
-  model = Neural_receiver(642, 12, 2, 4)
-  X = torch.rand([16, 2, 12, 642, 2])
-  T = (torch.rand([16, 2, 12, 642, 2]) > 0) * 2 - 1
-  logits = model(X, T)
-  print('X.shape:', X.shape)
-  print('logits.shape:', logits.shape)
+class NeuralReceiver_1b(NeuralReceiverBase):
 
-  model = Neural_receiver(96, 12, 4, 6)
-  X = torch.rand([16, 4, 12, 96, 2])
-  T = (torch.rand([16, 4, 12, 96, 2]) > 0) * 2 - 1
-  logits = model(X, T)
-  print('X.shape:', X.shape)
-  print('logits.shape:', logits.shape)
+  def __init__(self, subcarriers:int, timesymbols:int, streams:int, num_bits_per_symbol:int, **kwargs):
+    super().__init__(subcarriers, timesymbols, streams, num_bits_per_symbol)
+
+  def forward(self, x:Tensor, t:Tensor) -> Tensor:
+    M = self.num_bits_per_symbol
+    return x[:, :, :, :, :1].expand(-1, -1, -1, -1, M)
+
+
+class NeuralReceiver_2(NeuralReceiverBase):
+
+  def __init__(self, subcarriers:int, timesymbols:int, streams:int, num_bits_per_symbol:int, **kwargs):
+    super().__init__(subcarriers, timesymbols, streams, num_bits_per_symbol)
+
+  def forward(self, x:Tensor, t:Tensor) -> Tensor:
+    M = self.num_bits_per_symbol
+    return x[:, :, :, :, :1].expand(-1, -1, -1, -1, M)
+
+
+if __name__ == '__main__':
+  from modelTrain import CASE_TO_CONFIG
+
+  def config_to_input_shape(config):
+    S = config['subcarriers']
+    T = config['timesymbols']
+    L = config['streams']
+    return L, T, S, 2
+
+  for case in ['1a', '1b', '2']:
+    print(f'[Case {case}]')
+    config = CASE_TO_CONFIG[case]
+    model_cls = globals()[config['model']]
+    model = model_cls(**config)
+    input_shape = config_to_input_shape(config)
+    X = torch.randn([4, *input_shape])
+    T = (X > 0) * 2 - 1
+    logits = model(X, T)
+    print('X.shape:', X.shape)
+    print('logits.shape:', logits.shape)
+    assert logits.shape[-1] == config['num_bits_per_symbol']
