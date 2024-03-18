@@ -10,10 +10,10 @@ from typing import *
 
 import torch
 import torch.nn.functional as F
-from torch.optim import Optimizer, SGD, Adam, AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim import Optimizer, Adam
 from torch.utils.data import Dataset, DataLoader
 from lightning import LightningModule, Trainer, seed_everything
+from lightning.pytorch.callbacks import ModelCheckpoint
 from torchmetrics.classification import BinaryAccuracy
 import numpy as np
 from numpy import ndarray
@@ -21,7 +21,7 @@ from h5py import File as HDF5File
 
 from modelDesign import *
 
-torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision('high')
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -42,7 +42,7 @@ CASE_TO_CONFIG = {
     'num_bits_per_symbol': 4,
   },
   '2': {
-    'model': 'NeuralReceiver_1a',   # NeuralReceiver_2
+    'model': 'NeuralReceiver_2',
     'subcarriers': 96,
     'timesymbols': 12,
     'streams': 4,
@@ -76,10 +76,11 @@ class SignalDataset(Dataset):
 
 class LitModel(LightningModule):
 
-  def __init__(self, model:NeuralReceiverBase):
+  def __init__(self, model:NeuralReceiverBase, args=None):
     super().__init__()
 
     self.model = model
+    if args: self.save_hyperparameters(args)
 
     # ↓↓ training specified ↓↓
     self.epochs = -1
@@ -92,17 +93,7 @@ class LitModel(LightningModule):
     self.lr = args.lr
 
   def configure_optimizers(self) -> Optimizer:
-    optimizer = Adam(self.model.parameters(), lr=self.lr, weight_decay=1e-5)
-    scheduler = CosineAnnealingLR(optimizer, T_max=self.epochs, verbose=True)
-    return {
-      'optimizer': optimizer,
-      'lr_scheduler': scheduler,
-    }
-
-  def optimizer_step(self, epoch:int, batch_idx:int, optim:Optimizer, optim_closure:Callable):
-    super().optimizer_step(epoch, batch_idx, optim, optim_closure)
-    if batch_idx % 10 == 0:
-      self.log_dict({f'lr-{i}': group['lr'] for i, group in enumerate(optim.param_groups)})
+    return Adam(self.model.parameters(), lr=self.lr, weight_decay=1e-5)
 
   def training_step(self, batch:Tuple[Tensor], batch_idx:int) -> Tensor:
     x, t, y = batch
@@ -121,7 +112,7 @@ class LitModel(LightningModule):
 
     self.log('valid/loss', loss, on_step=True, on_epoch=True)
     self.valid_acc(logits, y)
-    self.log('valid/acc', self.train_acc, on_step=True, on_epoch=True)
+    self.log('valid/acc', self.valid_acc, on_step=True, on_epoch=True)
     return loss
 
 
@@ -159,27 +150,30 @@ def train(args):
 
   ''' Model & Optim '''
   config = CASE_TO_CONFIG[args.case]
-  model_cls = globals()[config['model']]
+  model_cls = globals()[args.model or config['model']]
   model = model_cls(**config)
   print(model)
-  lit = LitModel(model)
   if args.load:
-    lit = LitModel.load_from_checkpoint(args.load, model=model)
+    lit = LitModel.load_from_checkpoint(args.load, model=model, args=args)
+  else:
+    lit = LitModel(model, args)
   lit.setup_train_args(args)
 
   ''' Train '''
+  save_ckpt_callback = ModelCheckpoint(monitor='valid/acc', mode='max')
   trainer = Trainer(
     max_epochs=args.epochs,
     precision='16-mixed',
     benchmark=True,
-    enable_checkpointing=True,
+    callbacks=[save_ckpt_callback],
+    log_every_n_steps=10,
   )
   trainer.fit(lit, trainloader, validloader)
 
 
 if __name__ == '__main__':
   parser = ArgumentParser()
-  parser.add_argument('-M', '--model')
+  parser.add_argument('-M', '--model', help='model arch to overwrite --case')
   parser.add_argument('-C', '--case',       default='2', choices=['1a', '1b', '2'])
   parser.add_argument('-B', '--batch_size', default=16,   type=int)
   parser.add_argument('-E', '--epochs',     default=30,   type=int)

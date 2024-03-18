@@ -91,6 +91,69 @@ class Neural_receiver(nn.Module):
     return z
 
 
+class Neural_receiver_PE(nn.Module):
+
+  def __init__(self, subcarriers:int, timesymbols:int, streams:int, num_bits_per_symbol:int, **kwargs):
+    super().__init__()
+
+    self.subcarriers = subcarriers                  # S=624/96
+    self.timesymbols = timesymbols                  # T=12
+    self.streams = streams                          # L=Nr, 2/4
+    self.num_bits_per_symbol = num_bits_per_symbol  # M=4/6
+
+    self.num_blocks = 6
+    self.channel_list = [128, 128, 128]
+
+    d_posenc = 32
+    self.posenc = nn.Parameter(torch.empty([d_posenc, timesymbols, subcarriers]).normal_(std=0.02), requires_grad=True)
+    self.pre_conv = nn.Conv2d(4 * self.streams+d_posenc, 128, kernel_size=self.channel_list[2], padding='same')
+    self.blocks = nn.ModuleList([
+      ResBlock(self.channel_list, H=self.timesymbols, W=self.subcarriers) for _ in range(self.num_blocks)
+    ])
+    self.post_conv = nn.Conv2d(self.channel_list[1], self.streams * self.num_bits_per_symbol, kernel_size=7, padding='same')
+
+  def forward(self, x:Tensor, t:Tensor) -> Tensor:
+    # [B=16, L=2, T=12, S=642, c=2]
+    # x: vrng ~ ±7.0
+    # t: vrng {-1, 1}
+
+    if not 'use jit model':
+      B, L, T, S, c = x.shape
+      M = self.num_bits_per_symbol
+      assert L == self.streams
+      assert T == self.timesymbols
+      assert S == self.subcarriers
+    else:
+      B = x.shape[0]
+      M = self.num_bits_per_symbol
+      L = self.streams
+      T = self.timesymbols
+      S = self.subcarriers
+      c = 2
+
+    # [B, L*c, T, S]
+    x = x.permute(0, 1, 4, 2, 3).reshape(B, L * c, T, S)
+    t = t.permute(0, 1, 4, 2, 3).reshape(B, L * c, T, S)
+    # [B, L*4, T, S]
+    z = torch.cat([x, t], dim=1)
+    # [B, d, T, S]
+    posenc_ex = self.posenc.unsqueeze(0).expand(B, -1, -1, -1)
+    # [B, L*4+d, T, S]
+    z = torch.cat([z, posenc_ex], dim=1)
+
+    # [B, C=L*4+d, T, S]; T for time-domain, S for freq-domain
+    z = self.pre_conv(z)      # [B, C=24, T=12, F=624/96]
+    for block in self.blocks:
+      z = block(z)            # [B, C=24, T, S]
+    z = self.post_conv(z)     # [B, C=L*M, T, S]
+
+    # [B, L, T, S, M]
+    z: Tensor
+    z = z.reshape(B, L, M, T, S).permute(0, 1, 3, 4, 2)
+
+    return z
+
+
 ''' ours '''
 
 def init_weights(m:nn.Conv2d, mean:float=0.0, std:float=0.01):
