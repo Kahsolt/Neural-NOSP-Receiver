@@ -21,7 +21,7 @@ from h5py import File as HDF5File
 
 from modelDesign import *
 
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('medium')
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 

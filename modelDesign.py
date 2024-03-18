@@ -91,7 +91,22 @@ class Neural_receiver(nn.Module):
     return z
 
 
+class Neural_receiver_MA(Neural_receiver):
+
+  ''' convert input real/imag -> mag/angle '''
+
+  def forward(self, x: Tensor, t: Tensor) -> Tensor:
+    x_c = torch.empty(x.shape[:-1], dtype=torch.complex64)
+    x_c.real = x[..., 0]
+    x_c.imag = x[..., 1]
+    x[..., 0] = torch.abs(x_c)
+    x[..., 1] = torch.angle(x_c)
+    return super().forward(x, t)
+
+
 class Neural_receiver_PE(nn.Module):
+
+  ''' add PosEnc on T-S dim '''
 
   def __init__(self, subcarriers:int, timesymbols:int, streams:int, num_bits_per_symbol:int, **kwargs):
     super().__init__()
