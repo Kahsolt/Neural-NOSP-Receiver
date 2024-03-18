@@ -104,6 +104,66 @@ class Neural_receiver_MA(Neural_receiver):
     return super().forward(x, t)
 
 
+class Neural_receiver_clf16(nn.Module):
+
+  ''' convert input real/imag -> mag/angle '''
+
+  def __init__(self, subcarriers:int, timesymbols:int, streams:int, num_bits_per_symbol:int, **kwargs):
+    super().__init__()
+
+    self.subcarriers = subcarriers                  # S=624/96
+    self.timesymbols = timesymbols                  # T=12
+    self.streams = streams                          # L=Nr, 2/4
+    self.num_bits_per_symbol = num_bits_per_symbol  # M=4/6
+
+    self.num_blocks = 6
+    self.channel_list = [128, 128, 128]
+
+    self.pre_conv = nn.Conv2d(4 * self.streams, self.channel_list[2], kernel_size=3, padding='same')
+    self.blocks = nn.ModuleList([
+      ResBlock(self.channel_list, H=self.timesymbols, W=self.subcarriers) for _ in range(self.num_blocks)
+    ])
+    self.post_conv = nn.Conv2d(self.channel_list[1], self.streams * 2**self.num_bits_per_symbol, kernel_size=3, padding='same')
+
+  def forward(self, x:Tensor, t:Tensor) -> Tensor:
+    # [B=16, L=2, T=12, S=642, c=2]
+    # x: vrng ~ ±7.0
+    # t: vrng {-1, 1}
+
+    if not 'use jit model':
+      B, L, T, S, c = x.shape
+      M = self.num_bits_per_symbol
+      assert L == self.streams
+      assert T == self.timesymbols
+      assert S == self.subcarriers
+    else:
+      B = x.shape[0]
+      M = self.num_bits_per_symbol
+      L = self.streams
+      T = self.timesymbols
+      S = self.subcarriers
+      c = 2
+
+    # [B, L*c, T, S]
+    x = x.permute(0, 1, 4, 2, 3).reshape(B, L * c, T, S)
+    t = t.permute(0, 1, 4, 2, 3).reshape(B, L * c, T, S)
+    # [B, L*4, T, S]
+    z = torch.cat([x, t], dim=1)
+
+    # [B, C=L*4, T, S]; T for time-domain, S for freq-domain
+    z = self.pre_conv(z)      # [B, C=128, T=12, F=624/96]
+    for block in self.blocks:
+      z = block(z)            # [B, C=128, T, S]
+    z = self.post_conv(z)     # [B, C=L*2**M, T, S]
+
+    # [B, NC=128, L, T, S]
+    z: Tensor
+    z = z.reshape(B, 2**M, L, T, S)
+
+    return z
+
+
+
 class Neural_receiver_PE(nn.Module):
 
   ''' add PosEnc on T-S dim '''
